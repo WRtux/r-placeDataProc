@@ -1,0 +1,8 @@
+{
+  "type": "module",
+  "dependencies": {
+    "node-fetch": "^3.3.2",
+    "https-proxy-agent": "^7.0.1",
+    "sharp": "^0.32.4"
+  }
+}
