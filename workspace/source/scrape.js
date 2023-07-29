@@ -8,6 +8,14 @@ import fetch, {
   Response
 } from 'node-fetch';
 
+const outputFile = 'timelapse.json';
+
+const timeStart = new Date('2023-07-20T13:04:18Z').getTime();
+const timeEnd = new Date('2023-07-25T21:34:53Z').getTime();
+const timeStep = 30 * 1000;
+
+const proxy = new HttpsProxyAgent('http://localhost:7890');
+
 const userAgent = 'Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; rv:11.0) like Gecko';
 const authToken = await fs.readFile(new URL('auth-token.txt', import.meta.url), { encoding: 'utf-8' });
 
@@ -24,19 +32,15 @@ function getBodyObject(t) {
   };
 }
 
-const proxy = new HttpsProxyAgent('http://localhost:7890');
 
-const timeBegin = new Date('2023-07-20T13:04:18Z').getTime();
-const timeEnd = new Date('2023-07-25T21:34:53Z').getTime();
-const timeStep = 30 * 1000;
+let output = await fs.open(outputFile, 'a');
+output.writeFile('[', { encoding: 'utf-8' });
 
-
-let output = await fs.open('history.jsonm', 'a');
 let errorCount = 0;
-for (let t = timeBegin; t <= timeEnd; t += timeStep) {
-  let resp;
-  for (let i = 0; ; ) try {
-    resp = await fetch('https://gql-realtime-2.reddit.com/query', {
+l: for (let i = 0, t = timeStart; t <= timeEnd; i++, t += timeStep) {
+  let ro = undefined, to;
+  for (let j = 0; ; ) try {
+    let resp = await fetch('https://gql-realtime-2.reddit.com/query', {
       agent: proxy,
       method: 'POST',
       headers: {
@@ -51,15 +55,7 @@ for (let t = timeBegin; t <= timeEnd; t += timeStep) {
       referrerPolicy: 'origin-when-cross-origin',
       redirect: 'error'
     });
-    break;
-  } catch (err) {
-    console.log(`Connection failed`);
-    console.error(err);
-    if (++i === 3)
-      throw err;
-  }
-  let ro = undefined, to;
-  try {
+
     ro = await resp.json();
     if (!resp.ok)
       throw new Error(`Request failed`);
@@ -68,24 +64,38 @@ for (let t = timeBegin; t <= timeEnd; t += timeStep) {
     refs[1] = refs[0]?.['data']?.['frames'];
     if (refs[0] == null || refs[1] == null)
       throw new Error(`Invalid response`);
-    to = { time: t, id: refs[0]['id'], fragments: [] };
+
+    to = {
+      timestamp: t,
+      fragments: Array(6).fill(null)
+    };
     if (refs[0]['id'] == null)
       console.warn(`Bad UUID`);
     for (let ref of refs[1]) {
       if (ref == null || ref['canvasIndex'] == null || ref['url'] == null)
         throw new Error(`Invalid fragment data`);
-      to.fragments.push({ index: ref['canvasIndex'], url: ref['url'] });
+      if (!(ref['canvasIndex'] in to.fragments))
+        throw new Error(`Invalid fragment index`);
+      to.fragments[ref['canvasIndex']] = ref['url'];
     }
+
+    break;
   } catch (err) {
-    errorCount++;
-    console.log(`For time: ${t}`);
-    console.error(err);
+    j++, errorCount++;
+    console.log(`For ${new Date(t).toISOString()}`);
     if (ro !== undefined)
       console.debug(ro);
-    if (errorCount >= 10)
-      break;
+    console.error(err);
+    if (errorCount >= 20)
+      break l;
+    if (j >= 3)
+      continue l;
     continue;
   }
-  await output.writeFile(JSON.stringify(to) + '\n', { encoding: 'utf-8' });
+
+  let str = (i === 0 ? '' : ',') + `\n\t${JSON.stringify(to)}`;
+  await output.writeFile(str, { encoding: 'utf-8' });
 }
+
+output.writeFile('\n]\n', { encoding: 'utf-8' });
 await output.close();
