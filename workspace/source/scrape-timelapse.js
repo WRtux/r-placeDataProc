@@ -20,17 +20,36 @@ const proxy = new HttpsProxyAgent('http://localhost:7890');
 const userAgent = 'Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; rv:11.0) like Gecko';
 const authToken = await fs.readFile(new URL('auth-token.txt', import.meta.url), { encoding: 'utf-8' });
 
-function getBodyObject(t) {
-  return {
-    "operationName": "frameHistory",
-    "variables": {
-      "input": {
-        "actionName": "get_frame_history",
-        "GetFrameHistoryMessageData": { "timestamp": t }
-      }
-    },
-    "query": "mutation frameHistory($input: ActInput!) {\nact(input: $input) {\ndata {\n... on BasicMessage {\nid\ndata {\n... on GetFrameHistoryResponseMessageData {\nframes {\ncanvasIndex\nurl\n__typename\n}\n__typename\n}\n__typename\n}\n__typename\n}\n__typename\n}\n__typename\n}\n}"
-  };
+const getBodyObject = (t) => ({
+  "operationName": "frameHistory",
+  "variables": {
+    "input": {
+      "actionName": "get_frame_history",
+      "GetFrameHistoryMessageData": { "timestamp": t }
+    }
+  },
+  "query": "mutation frameHistory($input: ActInput!) {\nact(input: $input) {\ndata {\n... on BasicMessage {\nid\ndata {\n... on GetFrameHistoryResponseMessageData {\nframes {\ncanvasIndex\nurl\n__typename\n}\n__typename\n}\n__typename\n}\n__typename\n}\n__typename\n}\n__typename\n}\n}"
+});
+
+function extractFrameFragments(ro) {
+  let refs = [];
+  refs[0] = ro?.['data']?.['act']?.['data']?.[0];
+  refs[1] = refs[0]?.['data']?.['frames'];
+  if (refs[0] == null || refs[1] == null)
+    throw new Error(`Invalid response`);
+
+  let frags = Array(6).fill(null);
+  if (refs[0]['id'] == null)
+    console.warn(`Bad UUID.`);
+  for (let ref of refs[1]) {
+    if (ref == null || ref['canvasIndex'] == null || ref['url'] == null)
+      throw new Error(`Invalid fragment data`);
+    if (!(ref['canvasIndex'] in frags))
+      throw new Error(`Invalid fragment index`);
+    frags[ref['canvasIndex']] = ref['url'];
+  }
+
+  return frags;
 }
 
 async function requestFrameView(t, signal) {
@@ -58,25 +77,10 @@ async function requestFrameView(t, signal) {
     if (!resp.ok)
       throw new Error(`Request failed`);
 
-    let refs = [];
-    refs[0] = ro?.['data']?.['act']?.['data']?.[0];
-    refs[1] = refs[0]?.['data']?.['frames'];
-    if (refs[0] == null || refs[1] == null)
-      throw new Error(`Invalid response`);
-
     to = {
       timestamp: t,
-      fragments: Array(6).fill(null)
+      fragments: extractFrameFragments(ro)
     };
-    if (refs[0]['id'] == null)
-      console.warn(`Bad UUID`);
-    for (let ref of refs[1]) {
-      if (ref == null || ref['canvasIndex'] == null || ref['url'] == null)
-        throw new Error(`Invalid fragment data`);
-      if (!(ref['canvasIndex'] in to.fragments))
-        throw new Error(`Invalid fragment index`);
-      to.fragments[ref['canvasIndex']] = ref['url'];
-    }
 
   } catch (err) {
     console.log(`For ${new Date(t).toISOString()}`);
@@ -96,10 +100,12 @@ async function writeOutputJSON(recs) {
     .join(',');
   str += '\n]\n';
   await fs.writeFile(outputFile, str, { encoding: 'utf-8' });
+  console.log(`Saved ${recs.length} records.`);
 }
 
 let records = [];
 
+console.log(`Preparing to scrape...`);
 let taskSchedule = [];
 for (let t = timeStart; t < timeEnd; t += timeStep) {
   taskSchedule.push({ timestamp: t, retryCount: 0 });
@@ -114,9 +120,11 @@ if (await fs.access(outputFile).then(() => true, (err) => false)) {
   }
 }
 
+console.log(`Scraping...`);
 let taskCount = 0, taskPool = new Map();
 let errorCount = 0;
 let aborter = new AbortController(), signal = aborter.signal;
+
 while (taskSchedule.length > 0) {
   let tsk = taskSchedule.shift();
 
@@ -133,8 +141,10 @@ while (taskSchedule.length > 0) {
       errorCount++, tsk.retryCount++;
       if (errorCount >= errorAbortThreshold)
         throw aborter.abort(), new Error(`Aborted due to excessive errors`);
-      if (tsk.retryCount >= errorRetryLimit)
+      if (tsk.retryCount >= errorRetryLimit) {
+        console.warn(`Retry abandoned.`);
         return;
+      }
     }
     taskSchedule.unshift(tsk);
   });
@@ -147,8 +157,10 @@ while (taskSchedule.length > 0) {
     break;
   }
 
-  if (taskCount % 100 === 0)
+  if (taskCount % 100 === 0) {
+    console.log(`Checkpoint reached.`);
     await writeOutputJSON(records);
+  }
 }
 
 try {
@@ -159,3 +171,4 @@ try {
 
 records.sort((a, b) => a.timestamp - b.timestamp);
 await writeOutputJSON(records);
+console.log(`Scraping complete.`);
