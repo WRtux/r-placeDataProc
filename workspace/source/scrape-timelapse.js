@@ -10,7 +10,7 @@ const timeStart = new Date('2023-07-20T13:00:00Z').getTime();
 const timeEnd = new Date('2023-07-25T21:38:36Z').getTime();
 const timeStep = 15 * 1000;
 
-const taskConcurrency = 3;
+const taskConcurrency = 4;
 
 const errorRetryLimit = 3, errorAbortThreshold = 20;
 const fetchErrorTimeout = 5000;
@@ -83,6 +83,8 @@ async function requestFrameView(t, signal) {
     };
 
   } catch (err) {
+    if (err.name === 'AbortError')
+      throw err;
     console.log(`For ${new Date(t).toISOString()}`);
     if (ro !== undefined)
       console.debug(ro);
@@ -118,6 +120,7 @@ if (await fs.access(outputFile).then(() => true, (err) => false)) {
     let i = taskSchedule.findIndex((tsk) => tsk.timestamp === rec.timestamp);
     i !== -1 && taskSchedule.splice(i, 1);
   }
+  console.log(`Loaded ${records.length} existing records.`);
 }
 
 console.log(`Scraping...`);
@@ -133,7 +136,7 @@ while (taskSchedule.length > 0) {
     .then((rec) => records.push(rec));
   p = p.finally(() => taskPool.delete(id));
   p = p.catch(async (err) => {
-    if (err.code === 'ABORT_ERROR')
+    if (err.name === 'AbortError')
       return;
     if (err instanceof FetchError) {
       await timers.setTimeout(fetchErrorTimeout, undefined, { signal });
